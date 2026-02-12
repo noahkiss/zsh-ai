@@ -286,6 +286,7 @@ echo "Running OpenAI-compatible (keyless) tests..."
 
 test_openai_requires_key_for_default_url() {
     unset OPENAI_API_KEY
+    unset ZSH_AI_OPENAI_API_KEY
     export ZSH_AI_PROVIDER="openai"
     # Explicitly set to default URL to ensure test works
     export ZSH_AI_OPENAI_URL="https://api.openai.com/v1/chat/completions"
@@ -299,6 +300,7 @@ test_openai_requires_key_for_default_url() {
 
 test_openai_works_without_key_for_custom_url() {
     unset OPENAI_API_KEY
+    unset ZSH_AI_OPENAI_API_KEY
     export ZSH_AI_PROVIDER="openai"
     export ZSH_AI_OPENAI_URL="http://localhost:8080/v1/chat/completions"
 
@@ -311,6 +313,7 @@ test_openai_works_without_key_for_custom_url() {
 
 test_openai_query_without_auth_header() {
     unset OPENAI_API_KEY
+    unset ZSH_AI_OPENAI_API_KEY
     export ZSH_AI_PROVIDER="openai"
     export ZSH_AI_OPENAI_MODEL="local-model"
     export ZSH_AI_OPENAI_URL="http://localhost:8080/v1/chat/completions"
@@ -367,7 +370,85 @@ test_openai_query_with_auth_header_when_key_set() {
     return 0
 }
 
+test_openai_zsh_ai_key_passes_validation_for_default_url() {
+    unset OPENAI_API_KEY
+    export ZSH_AI_OPENAI_API_KEY="sk-custom-key"
+    export ZSH_AI_PROVIDER="openai"
+    export ZSH_AI_OPENAI_URL="https://api.openai.com/v1/chat/completions"
+
+    local result=$(_zsh_ai_validate_config 2>&1)
+    local exit_code=$?
+
+    # Should pass validation since ZSH_AI_OPENAI_API_KEY is set
+    assert_equals "$exit_code" "0"
+}
+
+test_openai_zsh_ai_key_takes_precedence() {
+    export OPENAI_API_KEY="original-key"
+    export ZSH_AI_OPENAI_API_KEY="override-key"
+    export ZSH_AI_PROVIDER="openai"
+    export ZSH_AI_OPENAI_MODEL="gpt-4o"
+    export ZSH_AI_OPENAI_URL="https://api.openai.com/v1/chat/completions"
+    local curl_args_file=$(mktemp)
+
+    curl() {
+        if [[ "$*" == *"api.openai.com"* ]]; then
+            echo "$*" > "$curl_args_file"
+            echo '{"choices":[{"message":{"content":"ls -la"}}]}'
+            return 0
+        fi
+        command curl "$@"
+    }
+
+    _zsh_ai_query_openai "list files" >/dev/null
+    local curl_args=$(cat "$curl_args_file")
+    rm -f "$curl_args_file"
+
+    # Should use the override key, not the original
+    if [[ "$curl_args" != *"override-key"* ]]; then
+        echo "FAIL: ZSH_AI_OPENAI_API_KEY should take precedence"
+        return 1
+    fi
+    if [[ "$curl_args" == *"original-key"* ]]; then
+        echo "FAIL: OPENAI_API_KEY should not be used when ZSH_AI_OPENAI_API_KEY is set"
+        return 1
+    fi
+    return 0
+}
+
+test_openai_falls_back_to_openai_api_key() {
+    unset ZSH_AI_OPENAI_API_KEY
+    export OPENAI_API_KEY="fallback-key"
+    export ZSH_AI_PROVIDER="openai"
+    export ZSH_AI_OPENAI_MODEL="gpt-4o"
+    export ZSH_AI_OPENAI_URL="https://api.openai.com/v1/chat/completions"
+    local curl_args_file=$(mktemp)
+
+    curl() {
+        if [[ "$*" == *"api.openai.com"* ]]; then
+            echo "$*" > "$curl_args_file"
+            echo '{"choices":[{"message":{"content":"ls -la"}}]}'
+            return 0
+        fi
+        command curl "$@"
+    }
+
+    _zsh_ai_query_openai "list files" >/dev/null
+    local curl_args=$(cat "$curl_args_file")
+    rm -f "$curl_args_file"
+
+    # Should fall back to OPENAI_API_KEY
+    if [[ "$curl_args" != *"fallback-key"* ]]; then
+        echo "FAIL: Should fall back to OPENAI_API_KEY when ZSH_AI_OPENAI_API_KEY is not set"
+        return 1
+    fi
+    return 0
+}
+
 test_openai_requires_key_for_default_url && echo "✓ Requires API key for default OpenAI URL"
 test_openai_works_without_key_for_custom_url && echo "✓ Works without API key for custom URL"
 test_openai_query_without_auth_header && echo "✓ Omits Authorization header when no API key"
 test_openai_query_with_auth_header_when_key_set && echo "✓ Includes Authorization header when API key is set"
+test_openai_zsh_ai_key_passes_validation_for_default_url && echo "✓ ZSH_AI_OPENAI_API_KEY passes validation for default URL"
+test_openai_zsh_ai_key_takes_precedence && echo "✓ ZSH_AI_OPENAI_API_KEY takes precedence over OPENAI_API_KEY"
+test_openai_falls_back_to_openai_api_key && echo "✓ Falls back to OPENAI_API_KEY when ZSH_AI_OPENAI_API_KEY is not set"
